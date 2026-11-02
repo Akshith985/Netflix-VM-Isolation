@@ -1,0 +1,7 @@
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: single-tenant
+value: 1000000
+preemptionPolicy: Never
+description: High priority so other pods can't evict the task; never preempts others itself.

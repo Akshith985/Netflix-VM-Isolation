@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Single-tenant node pool</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root {
+  --ground: #f4f5f6; --surface: #ffffff; --ink: #1f2933; --muted: #5b6670;
+  --line: #d6dadf; --busy: #2c5d7c; --busy-rest: #d9e4ec; --idle: #8995a1;
+  --wait: #a85a0b; --ok: #2f6a4c;
+  font-family: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--ground); color: var(--ink);
+  font-size: 14px; line-height: 1.45; font-variant-numeric: tabular-nums;
+}
+.wrap { max-width: 1180px; margin: 0 auto; padding: 20px 24px 40px; }
+header {
+  display: flex; justify-content: space-between; align-items: baseline;
+  flex-wrap: wrap; gap: 8px 16px; padding-bottom: 14px;
+  border-bottom: 1px solid var(--line);
+}
+h1 { font-size: 18px; font-weight: 600; margin: 0; }
+h2 { font-size: 14px; font-weight: 600; margin: 0 0 8px; }
+.meta { color: var(--muted); font-size: 13px; }
+#summary { margin: 14px 0 4px; font-size: 15px; }
+#alert {
+  margin: 12px 0; padding: 10px 12px; font-size: 13px;
+  border-left: 3px solid var(--wait); background: #fbf1e6;
+}
+#alert[hidden] { display: none; }
+.legend {
+  display: flex; flex-wrap: wrap; gap: 6px 22px; margin: 10px 0 20px;
+  color: var(--muted); font-size: 13px;
+}
+.legend span { display: inline-flex; align-items: center; gap: 7px; }
+.key { display: inline-block; width: 22px; height: 12px; }
+.layout {
+  display: grid; grid-template-columns: minmax(0, 1fr) 340px;
+  gap: 40px; align-items: start;
+}
+.row {
+  display: grid; grid-template-columns: 132px minmax(0, 1fr);
+  gap: 16px; padding: 14px 0; border-top: 1px solid var(--line);
+}
+.row:last-of-type { border-bottom: 1px solid var(--line); }
+.shape { font-weight: 600; }
+.spec { color: var(--muted); font-size: 13px; }
+.nodes { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 8px; min-height: 40px; }
+.none { align-self: center; color: var(--muted); font-size: 13px; }
+.node {
+  position: relative; flex: none; height: 40px;
+  border: 1px solid var(--idle); background: var(--surface);
+}
+.node.busy { border-color: var(--busy); background: var(--busy-rest); }
+.node.busy span { position: absolute; top: 0; bottom: 0; left: 0; background: var(--busy); }
+.node.wait { border: 1px dashed var(--wait); background: transparent; }
+.node:hover, .node:focus-visible { outline: 2px solid var(--ink); outline-offset: 1px; }
+#detail { min-height: 20px; margin-top: 12px; color: var(--muted); font-size: 13px; }
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th {
+  padding: 4px 0 6px; text-align: left; font-weight: 500; color: var(--muted);
+  border-bottom: 1px solid var(--line);
+}
+td { padding: 6px 0; border-bottom: 1px solid #e6e9ec; }
+th.num, td.num { text-align: right; }
+.warm { color: var(--ok); }
+.cold { color: var(--wait); }
+.empty { padding: 8px 0; color: var(--muted); font-size: 13px; }
+@media (max-width: 920px) {
+  .layout { grid-template-columns: 1fr; gap: 28px; }
+  .row { grid-template-columns: 1fr; gap: 8px; }
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Single-tenant node pool</h1>
+    <div class="meta" id="meta">Connecting</div>
+  </header>
+  <div id="alert" role="alert" hidden></div>
+  <p id="summary"></p>
+  <div class="legend">
+    <span><i class="key" style="border:1px solid var(--idle);background:var(--surface)"></i>Idle, ready to claim</span>
+    <span><i class="key" style="border:1px solid var(--busy);background:linear-gradient(to right,var(--busy) 60%,var(--busy-rest) 60%)"></i>Running; the dark part is the CPU the task requested</span>
+    <span><i class="key" style="border:1px dashed var(--wait)"></i>Task waiting for a node to boot</span>
+    <span>Width is proportional to vCPU.</span>
+  </div>
+  <div class="layout">
+    <section>
+      <h2>Nodes by shape</h2>
+      <div id="pool"></div>
+      <div id="detail">Hover or focus a node for details.</div>
+    </section>
+    <aside>
+      <h2>Recent task starts</h2>
+      <div id="recent"></div>
+    </aside>
+  </div>
+</div>
+<script>
+(function () {
+  const PX_PER_CPU = 7;
+  const HINT = 'Hover or focus a node for details.';
+  const el = id => document.getElementById(id);
+  const esc = s => String(s).replace(/[&<>"']/g, c =>
+    ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]));
+  const num = v => String(Math.round(v * 10) / 10);
+  const cache = {};
+  function put(id, html) {
+    if (cache[id] !== html) { cache[id] = html; el(id).innerHTML = html; }
+  }
+  function block(cls, cpu, detail, inner) {
+    return '<div class="node ' + cls + '" tabindex="0" style="width:' +
+      Math.round(cpu * PX_PER_CPU) + 'px" data-detail="' + esc(detail) +
+      '" aria-label="' + esc(detail) + '">' + (inner || '') + '</div>';
+  }
+
+  function render(s) {
+    const t = s.totals;
+    let line = t.nodes + (t.nodes === 1 ? ' node, ' : ' nodes, ') +
+      t.busy + ' running, ' + t.waiting + ' waiting for a node.';
+    line += t.started
+      ? ' ' + t.warm + ' of ' + t.started + ' tasks started warm (' +
+        Math.round(100 * t.warm / t.started) + '%).'
+      : ' No task starts recorded yet.';
+    put('summary', esc(line));
+    put('meta', esc(s.context) + ', updated ' +
+      new Date(s.now * 1000).toLocaleTimeString());
+
+    put('pool', s.shapes.map(sh => {
+      const items = sh.nodes.map(n => {
+        if (n.state === 'busy') {
+          const pct = Math.min(100, Math.round(100 * n.requested_cpu / sh.cpu));
+          return block('busy', sh.cpu,
+            n.name + ': running ' + n.task + ', ' + num(n.requested_cpu) +
+            ' of ' + sh.cpu + ' vCPU requested (' + pct + '%).',
+            '<span style="width:' + pct + '%"></span>');
+        }
+        return block('idle', sh.cpu,
+          n.name + ': idle, ready for the next ' + sh.name + ' task.');
+      }).concat(sh.waiting.map(w => block('wait', sh.cpu,
+        w.task + ': waiting ' + Math.round(w.waited_s) + ' s for a new ' +
+        sh.name + ' node.')));
+      return '<div class="row"><div><div class="shape">' + esc(sh.name) +
+        '</div><div class="spec">' + sh.cpu + ' vCPU, ' + sh.memory_gi +
+        ' GiB</div><div class="spec">Warm target ' + sh.warm_target +
+        '</div></div><div class="nodes">' +
+        (items.length ? items.join('') : '<span class="none">No nodes</span>') +
+        '</div></div>';
+    }).join(''));
+
+    put('recent', s.recent.length
+      ? '<table><thead><tr><th>Task</th><th>Shape</th><th class="num">Wait</th>' +
+        '<th>Start</th></tr></thead><tbody>' +
+        s.recent.map(r => '<tr><td>' + esc(r.task) + '</td><td>' + esc(r.shape) +
+          '</td><td class="num">' + r.wait_s.toFixed(1) + ' s</td><td class="' +
+          r.kind + '">' + (r.kind === 'warm' ? 'Warm' : 'Cold') + '</td></tr>'
+        ).join('') + '</tbody></table>'
+      : '<div class="empty">No task starts recorded yet.</div>');
+  }
+
+  const pool = el('pool'), detail = el('detail');
+  function show(e) {
+    const n = e.target.closest && e.target.closest('.node');
+    if (n) detail.textContent = n.dataset.detail;
+  }
+  pool.addEventListener('mouseover', show);
+  pool.addEventListener('focusin', show);
+  pool.addEventListener('mouseleave', () => { detail.textContent = HINT; });
+
+  async function tick() {
+    try {
+      const r = await fetch('/api/state', {cache: 'no-store'});
+      const s = await r.json();
+      if (!r.ok) throw new Error(s.error || ('HTTP ' + r.status));
+      el('alert').hidden = true;
+      render(s);
+    } catch (e) {
+      const a = el('alert');
+      a.hidden = false;
+      a.textContent = e instanceof TypeError
+        ? "The dashboard server isn't responding. Restart it with: python -m stctl dash"
+        : "Can't read the cluster: " + e.message +
+          ". Check that it is running (make up) and that the context exists.";
+    }
+    setTimeout(tick, 1000);
+  }
+  tick();
+})();
+</script>
+</body>
+</html>

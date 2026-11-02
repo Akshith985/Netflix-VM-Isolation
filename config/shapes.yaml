@@ -1,0 +1,11 @@
+overhead:            # per-node cost of sidecars and system services
+  cpu: 0.5
+  memory_gi: 1
+boot_seconds: 15     # simulated cold-boot time for a new node
+idle_ttl_seconds: 60 # idle nodes beyond the warm target are removed after this
+shapes:
+  - {name: s4,  cpu: 4,  memory_gi: 16,  warm: 1}
+  - {name: s8,  cpu: 8,  memory_gi: 32,  warm: 1}
+  - {name: s16, cpu: 16, memory_gi: 64,  warm: 1}
+  - {name: s32, cpu: 32, memory_gi: 128, warm: 0}
+  - {name: s64, cpu: 64, memory_gi: 256, warm: 0}
